@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PhantomHand Config</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; padding: 16px; background: #0f172a; color: #f8fafc; min-width: 300px; }
+    h2 { margin-top: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 8px; }
+    .status { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #ef4444; }
+    .status.connected { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    label { display: block; margin: 12px 0 4px; font-size: 0.9rem; color: #94a3b8; }
+    input { width: 100%; padding: 8px; box-sizing: border-box; background: #1e293b; border: 1px solid #334155; color: white; border-radius: 4px; border-radius: 4px; }
+    button { margin-top: 16px; width: 100%; padding: 10px; border-radius: 4px; background: #3b82f6; color: white; border: none; cursor: pointer; font-weight: 600; transition: 0.2s; }
+    button:hover { background: #2563eb; }
+    .muted { font-size: 0.8rem; color: #64748b; margin-top: 12px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2><img src="icon-48.png" alt="logo" style="width: 24px; height: 24px; vertical-align: middle; border-radius: 4px;"> <span id="status-dot" class="status"></span> PhantomHand Link</h2>
+  <label for="ws-url">Command Center WS URL:</label>
+  <input type="text" id="ws-url" placeholder="wss://your-ai-studio-url.run.app" />
+  <button id="save-btn">Connect to Agent Server</button>
+  <div class="muted">PhantomHand Extension / CDP Engine Enabled</div>
+  <script src="popup.js"></script>
+</body>
+</html>
