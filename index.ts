@@ -41,47 +41,31 @@ class BrowserMcpServer {
    * Try to kill the process occupying the given port.
    * Supports Windows (netstat + taskkill) and Unix (lsof + kill).
    */
-  private killProcessOnPort(port: number): boolean {
-    try {
-      if (process.platform === "win32") {
-        const output = execSync(`netstat -ano | findstr ":${port}"`, { encoding: "utf-8" });
-        const pids = new Set<number>();
-        for (const line of output.trim().split("\n")) {
-          const parts = line.trim().split(/\s+/);
-          const pid = Number(parts[parts.length - 1]);
-          if (pid && pid !== 0) pids.add(pid);
-        }
-        for (const pid of pids) {
-          try {
-            execSync(`taskkill /PID ${pid} /F`, { encoding: "utf-8" });
-            console.error(`[MCP] Killed process ${pid} occupying port ${port}`);
-          } catch {
-            // Process may have already exited
-          }
-        }
-        return pids.size > 0;
-      } else {
-        // macOS / Linux
-        const output = execSync(`lsof -ti :${port}`, { encoding: "utf-8" });
-        const pids = output.trim().split("\n").map(Number).filter(Boolean);
-        for (const pid of pids) {
-          try {
-            execSync(`kill -9 ${pid}`);
-            console.error(`[MCP] Killed process ${pid} occupying port ${port}`);
-          } catch {
-            // Process may have already exited
-          }
-        }
-        return pids.length > 0;
-      }
-    } catch {
-      // No process found on port, or command failed
-      return false;
-    }
-  }
+  private isMaster = true;
+  private proxyWsClient: WebSocket | null = null;
 
   private setupWebSocketHandlers() {
-    this.wss.on("connection", (ws) => {
+    this.wss.on("connection", (ws, req) => {
+      const isProxy = req.url?.includes('type=proxy');
+      if (isProxy) {
+        ws.on("message", async (message) => {
+          try {
+            const msg = JSON.parse(message.toString());
+            if (msg.action === 'proxy_request') {
+              try {
+                const res = await this.sendWsCommand(msg.realAction, msg.realData, msg.expectedResponseAction);
+                ws.send(JSON.stringify({ action: msg.expectedResponseAction, data: res }));
+              } catch (e: any) {
+                ws.send(JSON.stringify({ action: 'error', data: { message: e.message } }));
+              }
+            }
+          } catch (e) {
+            console.error("[MCP] Proxy handler error", e);
+          }
+        });
+        return;
+      }
+
       ws.on("message", (message) => {
         try {
           const data = JSON.parse(message.toString());
@@ -91,7 +75,6 @@ class BrowserMcpServer {
           } 
           else if (data.target === 'dashboard' && data.action) {
             if (data.action === 'error') {
-              // Reject all pending requests with the error message
               for (const [key, { reject }] of this.pendingRequests.entries()) {
                 reject(new Error(data.data?.message || 'Unknown browser error'));
               }
@@ -114,75 +97,69 @@ class BrowserMcpServer {
     });
   }
 
-  /**
-   * Start the WebSocket server with automatic port conflict resolution.
-   * If the port is already in use, it will attempt to kill the occupying
-   * process and retry up to MAX_PORT_RETRIES times.
-   *
-   * Key: the WebSocketServer is only created AFTER the HTTP server
-   * successfully binds, so WSS never sees an EADDRINUSE error.
-   */
-  private startWebSocketServer(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      let attempt = 0;
-      let settled = false;
-
-      const tryListen = () => {
-        attempt++;
-        const server = createServer();
-
-        // Must attach error handler BEFORE calling listen()
-        server.on("error", (err: NodeJS.ErrnoException) => {
-          if (settled) return;
-          if (err.code === "EADDRINUSE" && attempt <= MAX_PORT_RETRIES) {
-            console.error(`[MCP] Port ${PORT} is in use (attempt ${attempt}/${MAX_PORT_RETRIES}), trying to reclaim...`);
-            const killed = this.killProcessOnPort(PORT);
-            if (killed) {
-              // Give the OS a moment to release the port
-              setTimeout(tryListen, 1000);
-            } else {
-              settled = true;
-              reject(new Error(
-                `Port ${PORT} is in use but could not identify/kill the occupying process. ` +
-                `Set a different port via the PORT or MCP_PORT environment variable.`
-              ));
-            }
-          } else if (err.code === "EADDRINUSE") {
-            settled = true;
-            reject(new Error(
-              `Port ${PORT} is still in use after ${MAX_PORT_RETRIES} attempts. ` +
-              `Please manually free the port or set a different one via PORT or MCP_PORT env var.`
-            ));
-          } else {
-            settled = true;
-            reject(err);
+  private startProxyClient() {
+    this.proxyWsClient = new WebSocket("ws://localhost:" + PORT + "/?type=proxy");
+    this.proxyWsClient.on('open', () => {
+      console.error("[MCP] Connected to Master MCP on port " + PORT + " as a Proxy");
+    });
+    this.proxyWsClient.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg.action === 'error') {
+          for (const [key, { reject }] of this.pendingRequests.entries()) {
+            reject(new Error(msg.data?.message || 'Unknown browser error'));
           }
-        });
+          this.pendingRequests.clear();
+        } else if (this.pendingRequests.has(msg.action)) {
+          const { resolve } = this.pendingRequests.get(msg.action)!;
+          this.pendingRequests.delete(msg.action);
+          resolve(msg.data);
+        }
+      } catch (e) {
+        console.error("[MCP] Proxy Parse Error", e);
+      }
+    });
+    this.proxyWsClient.on('close', () => {
+      console.error("[MCP] Disconnected from Master. Retrying in 2s...");
+      setTimeout(() => this.startProxyClient(), 2000);
+    });
+  }
 
-        // Only create WSS after port is successfully acquired
-        server.listen(PORT, () => {
-          if (settled) return;
-          settled = true;
-          this.wss = new WebSocketServer({ server });
-          this.setupWebSocketHandlers();
-          console.error(`[MCP] WebSocket Command Center running on ws://localhost:${PORT}`);
+  private startWebSocketServer(): Promise<void> {
+    return new Promise((resolve) => {
+      const server = createServer();
+
+      server.once("error", (err: any) => {
+        if (err.code === "EADDRINUSE") {
+          console.error(`[MCP] Port ` + PORT + ` is in use. Falling back to Proxy Broker mode...`);
+          this.isMaster = false;
+          this.startProxyClient();
           resolve();
-        });
-      };
+        }
+      });
 
-      tryListen();
+      server.listen(PORT, () => {
+        this.isMaster = true;
+        this.wss = new WebSocketServer({ server });
+        this.setupWebSocketHandlers();
+        console.error(`[MCP] WebSocket Master running on ws://localhost:` + PORT);
+        resolve();
+      });
     });
   }
 
   private async sendWsCommand(action: string, data: any = {}, expectedResponseAction: string): Promise<any> {
-    if (this.browserSockets.size === 0) {
-      throw new Error(`No browser extension connected. If you haven't installed it, the unpacked extension is located at: ${EXTENSION_PATH}. Please load it in Chrome/Edge via chrome://extensions, then click its icon to connect to ws://localhost:${PORT}`);
+    if (this.isMaster && this.browserSockets.size === 0) {
+      throw new Error(`No browser extension connected. If you haven't installed it, the unpacked extension is located at: ` + EXTENSION_PATH + `. Please load it in Chrome/Edge via chrome://extensions, then click its icon to connect to ws://localhost:` + PORT);
+    }
+    if (!this.isMaster && (!this.proxyWsClient || this.proxyWsClient.readyState !== WebSocket.OPEN)) {
+      throw new Error(`Proxy client not connected to Master on ws://localhost:` + PORT);
     }
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(expectedResponseAction);
-        reject(new Error(`Timeout waiting for browser to complete action: ${action}`));
+        reject(new Error(`Timeout waiting for browser to complete action: ` + action));
       }, 30000);
 
       this.pendingRequests.set(expectedResponseAction, {
@@ -190,8 +167,13 @@ class BrowserMcpServer {
         reject: (err) => { clearTimeout(timeout); reject(err); }
       });
 
-      const payload = JSON.stringify({ target: 'extension', action, ...data });
-      this.browserSockets.forEach(s => s.send(payload));
+      if (this.isMaster) {
+        const payload = JSON.stringify({ target: 'extension', action, ...data });
+        this.browserSockets.forEach(s => s.send(payload));
+      } else {
+        const payload = JSON.stringify({ action: 'proxy_request', realAction: action, realData: data, expectedResponseAction });
+        this.proxyWsClient!.send(payload);
+      }
     });
   }
 
