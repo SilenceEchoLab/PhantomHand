@@ -6,6 +6,17 @@ import { WebSocket, WebSocketServer } from "ws";
 import { createServer, type Server as HttpServer } from "http";
 import { execSync } from "child_process";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const getExtPath = () => {
+  if (typeof __dirname !== "undefined") {
+    return path.resolve(__dirname, __dirname.endsWith("dist") ? "../extension" : "./extension");
+  }
+  // @ts-ignore
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "./extension");
+};
+const EXTENSION_PATH = getExtPath();
 
 dotenv.config({ quiet: true });
 
@@ -165,7 +176,7 @@ class BrowserMcpServer {
 
   private async sendWsCommand(action: string, data: any = {}, expectedResponseAction: string): Promise<any> {
     if (this.browserSockets.size === 0) {
-      throw new Error("No browser extension connected. Please open the browser, click the extension icon, and connect to ws://localhost:37210");
+      throw new Error(`No browser extension connected. If you haven't installed it, the unpacked extension is located at: ${EXTENSION_PATH}. Please load it in Chrome/Edge via chrome://extensions, then click its icon to connect to ws://localhost:${PORT}`);
     }
 
     return new Promise((resolve, reject) => {
@@ -186,8 +197,14 @@ class BrowserMcpServer {
 
   private setupTools() {
     this.mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        // ── Existing Tools ──
+        tools: [
+          // ── New Tool for Extension Setup ──
+          {
+            name: "get_extension_info",
+            description: "Get the absolute local path to the unpacked browser extension folder. Use this to help the user load the extension if it is not connected.",
+            inputSchema: { type: "object", properties: {} }
+          },
+          // ── Existing Tools ──
         {
           name: "browser_navigate",
           description: "Navigate the active browser tab to a specific URL.",
@@ -422,6 +439,14 @@ class BrowserMcpServer {
     this.mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         switch (request.params.name) {
+          case "get_extension_info": {
+            return {
+              content: [{
+                type: "text",
+                text: `The PhantomHand extension is located at: ${EXTENSION_PATH}\n\nPlease load this unpacked extension in Chrome/Edge via chrome://extensions/.`
+              }]
+            };
+          }
           // ── Existing Handlers ──
           case "browser_navigate": {
             const url = String(request.params.arguments?.url);
