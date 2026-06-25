@@ -61,6 +61,26 @@ import { EXTENSION_PATH } from "./config.js";
           description: "Get the HTML content of the active page or a specific CSS selector.",
           inputSchema: { type: "object", properties: { selector: { type: "string" } } }
         },
+        {
+          name: "browser_upload_file",
+          description: "Upload a local file to a file input element by CSS selector.",
+          inputSchema: { type: "object", properties: { selector: { type: "string" }, filePath: { type: "string" } }, required: ["selector", "filePath"] }
+        },
+        {
+          name: "browser_extract_text",
+          description: "Get the raw text content of the active page or a specific CSS selector.",
+          inputSchema: { type: "object", properties: { selector: { type: "string" } } }
+        },
+        {
+          name: "browser_get_attributes",
+          description: "Get all attributes of an element by CSS selector.",
+          inputSchema: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"] }
+        },
+        {
+          name: "browser_scroll_to_element",
+          description: "Scroll the page so the specified element is centered in the viewport.",
+          inputSchema: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"] }
+        },
 
         // ── Mouse Tools ──
         {
@@ -308,6 +328,27 @@ import { EXTENSION_PATH } from "./config.js";
             const selector = request.params.arguments?.selector ? String(request.params.arguments?.selector) : undefined;
             const res = await sendWsCommand("get_html", { selector }, "get_html_done");
             return { content: [{ type: "text", text: `HTML Extracted:\n${res.html}` }] };
+          }
+          case "browser_upload_file": {
+            const selector = String(request.params.arguments?.selector);
+            const filePath = String(request.params.arguments?.filePath);
+            const res = await sendWsCommand("upload_file", { selector, filePath }, "upload_file_done");
+            return { content: [{ type: "text", text: res.success ? `File uploaded.` : `Failed: ${res.error}` }] };
+          }
+          case "browser_extract_text": {
+            const selector = request.params.arguments?.selector ? String(request.params.arguments?.selector) : undefined;
+            const res = await sendWsCommand("extract_text", { selector }, "extract_text_done");
+            return { content: [{ type: "text", text: `Extracted text:\n${res.text}` }] };
+          }
+          case "browser_get_attributes": {
+            const selector = String(request.params.arguments?.selector);
+            const res = await sendWsCommand("get_attributes", { selector }, "get_attributes_done");
+            return { content: [{ type: "text", text: `Attributes for ${selector}:\n${JSON.stringify(res.attributes, null, 2)}` }] };
+          }
+          case "browser_scroll_to_element": {
+            const selector = String(request.params.arguments?.selector);
+            const res = await sendWsCommand("scroll_to_element", { selector }, "scroll_to_element_done");
+            return { content: [{ type: "text", text: res.success ? `Scrolled to element ${selector}.` : `Element not found.` }] };
           }
 
           // ── Mouse Tools ──

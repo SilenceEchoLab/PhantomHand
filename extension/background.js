@@ -167,6 +167,76 @@ async function executeCommand(command) {
     return;
   }
 
+  if (command.action === 'upload_file') {
+    try {
+      const doc = await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', {});
+      const node = await chrome.debugger.sendCommand({ tabId }, 'DOM.querySelector', { nodeId: doc.root.nodeId, selector: command.selector });
+      if (node.nodeId) {
+        await chrome.debugger.sendCommand({ tabId }, 'DOM.setFileInputFiles', { nodeId: node.nodeId, files: [command.filePath] });
+        replyToAgent('upload_file_done', { success: true });
+      } else {
+        replyToAgent('upload_file_done', { success: false, error: 'Node not found' });
+      }
+    } catch(e) {
+      replyToAgent('upload_file_done', { success: false, error: e.message });
+    }
+  }
+
+  if (command.action === 'extract_text') {
+    try {
+      const res = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (selector) => {
+          if (!selector) return document.body.innerText;
+          const el = document.querySelector(selector);
+          return el ? el.innerText : null;
+        },
+        args: [command.selector || null]
+      });
+      replyToAgent('extract_text_done', { text: res[0]?.result });
+    } catch (e) {
+      replyToAgent('error', { message: e.message });
+    }
+  }
+
+  if (command.action === 'get_attributes') {
+    try {
+      const res = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (selector) => {
+          const el = document.querySelector(selector);
+          if (!el) return null;
+          const attrs = {};
+          for (const attr of el.attributes) {
+            attrs[attr.name] = attr.value;
+          }
+          return attrs;
+        },
+        args: [command.selector]
+      });
+      replyToAgent('get_attributes_done', { attributes: res[0]?.result });
+    } catch (e) {
+      replyToAgent('error', { message: e.message });
+    }
+  }
+
+  if (command.action === 'scroll_to_element') {
+    try {
+      const res = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (selector) => {
+          const el = document.querySelector(selector);
+          if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); return true; }
+          return false;
+        },
+        args: [command.selector]
+      });
+      replyToAgent('scroll_to_element_done', { success: res[0]?.result });
+    } catch (e) {
+      replyToAgent('error', { message: e.message });
+    }
+  }
+
   if (command.action === 'get_html') {
     try {
       const res = await chrome.scripting.executeScript({
