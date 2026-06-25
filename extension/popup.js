@@ -7,6 +7,8 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get(['wsUrl', 'connectionStatus'], (data) => {
     if (data.wsUrl) {
       wsUrlInput.value = data.wsUrl;
+    } else {
+      wsUrlInput.value = 'ws://localhost:37210';
     }
     if (data.connectionStatus === 'connected') {
       statusDot.classList.add('connected');
