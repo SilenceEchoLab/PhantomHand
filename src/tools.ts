@@ -126,7 +126,17 @@ import { EXTENSION_PATH } from "./config.js";
           }
         },
 
-        // ── Keyboard Tools ──
+        // ── Keyboard & Clipboard Tools ──
+        {
+          name: "browser_clipboard_set",
+          description: "Write text to the system clipboard.",
+          inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
+        },
+        {
+          name: "browser_clipboard_get",
+          description: "Read text from the system clipboard.",
+          inputSchema: { type: "object", properties: {} }
+        },
         {
           name: "browser_select_all",
           description: "Select all text/content in the currently focused element (Ctrl+A). Commonly used before typing to replace existing text in input fields.",
@@ -209,6 +219,16 @@ import { EXTENSION_PATH } from "./config.js";
             properties: { ms: { type: "number" } }
           }
         },
+        {
+          name: "browser_fast_forward",
+          description: "Instantly fast-forward virtual time (e.g., to skip countdowns or animations) without real-world waiting.",
+          inputSchema: { type: "object", properties: { ms: { type: "number", description: "Milliseconds to advance" } }, required: ["ms"] }
+        },
+        {
+          name: "browser_wait_for_download",
+          description: "Wait for a download to complete and get its path. Default timeout 30s.",
+          inputSchema: { type: "object", properties: { timeout: { type: "number", description: "Timeout in ms" } } }
+        },
 
         // ── Tab Management ──
         {
@@ -259,6 +279,18 @@ import { EXTENSION_PATH } from "./config.js";
           name: "browser_get_page_info",
           description: "Get the current page URL and title.",
           inputSchema: { type: "object", properties: {} }
+        },
+        
+        // ── Session & State ──
+        {
+          name: "browser_session_export",
+          description: "Export cookies for the current domain to bypass logins later.",
+          inputSchema: { type: "object", properties: {} }
+        },
+        {
+          name: "browser_session_import",
+          description: "Import cookies into the current domain (JSON string).",
+          inputSchema: { type: "object", properties: { cookies: { type: "string", description: "JSON string of cookies array" } }, required: ["cookies"] }
         }
       ]
     }));
@@ -394,6 +426,15 @@ import { EXTENSION_PATH } from "./config.js";
             await sendWsCommand("keyboard_shortcut", { key, ctrl, alt, shift, meta }, "keyboard_shortcut_done");
             return { content: [{ type: "text", text: `Keyboard shortcut sent: ${[ctrl && 'Ctrl', alt && 'Alt', shift && 'Shift', meta && 'Meta', key].filter(Boolean).join('+')}` }] };
           }
+          case "browser_clipboard_set": {
+            const text = String(request.params.arguments?.text);
+            const res = await sendWsCommand("clipboard_set", { text }, "clipboard_set_done");
+            return { content: [{ type: "text", text: res.success ? `Text copied to clipboard.` : `Failed to set clipboard.` }] };
+          }
+          case "browser_clipboard_get": {
+            const res = await sendWsCommand("clipboard_get", {}, "clipboard_get_result");
+            return { content: [{ type: "text", text: `Clipboard content:\n${res.text || ""}` }] };
+          }
 
           // ── Form Tools ──
           case "browser_set_value": {
@@ -444,6 +485,16 @@ import { EXTENSION_PATH } from "./config.js";
             await new Promise(r => setTimeout(r, ms));
             return { content: [{ type: "text", text: `Waited ${ms}ms.` }] };
           }
+          case "browser_fast_forward": {
+            const ms = Number(request.params.arguments?.ms) || 5000;
+            const res = await sendWsCommand("fast_forward", { ms }, "fast_forward_done");
+            return { content: [{ type: "text", text: res.success ? `Virtual time advanced by ${ms}ms.` : `Failed to fast-forward.` }] };
+          }
+          case "browser_wait_for_download": {
+            const timeout = Number(request.params.arguments?.timeout) || 30000;
+            const res = await sendWsCommand("wait_for_download", { timeout }, "wait_for_download_result");
+            return { content: [{ type: "text", text: res.success ? `Download complete. File saved at: ${res.filePath}` : `Download failed/timeout: ${res.error}` }] };
+          }
 
           // ── Tab Management ──
           case "browser_tab_new": {
@@ -483,6 +534,22 @@ import { EXTENSION_PATH } from "./config.js";
           case "browser_get_page_info": {
             const res = await sendWsCommand("get_page_info", {}, "get_page_info_result");
             return { content: [{ type: "text", text: `Page Info:\nURL: ${res.url}\nTitle: ${res.title}` }] };
+          }
+          
+          // ── Session & State ──
+          case "browser_session_export": {
+            const res = await sendWsCommand("session_export", {}, "session_export_result");
+            return { content: [{ type: "text", text: `Session cookies exported (save this JSON):\n${JSON.stringify(res.cookies, null, 2)}` }] };
+          }
+          case "browser_session_import": {
+            const cookiesStr = String(request.params.arguments?.cookies);
+            try {
+              const cookies = JSON.parse(cookiesStr);
+              const res = await sendWsCommand("session_import", { cookies }, "session_import_done");
+              return { content: [{ type: "text", text: res.success ? `Session cookies imported successfully. Consider reloading the page.` : `Failed to import cookies.` }] };
+            } catch (e: any) {
+              return { content: [{ type: "text", text: `Invalid cookies JSON: ${e.message}` }], isError: true };
+            }
           }
 
           default:

@@ -8,7 +8,10 @@
     "tabs",
     "debugger",
     "scripting",
-    "storage"
+    "storage",
+    "clipboardRead",
+    "clipboardWrite",
+    "downloads"
   ],
   "host_permissions": [
     "<all_urls>"

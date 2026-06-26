@@ -11,8 +11,45 @@
     if (request.type === "PERCEIVE_DOM") {
       clearVisualMarks(); // Clean up existing
 
+      // Recursive function to find elements including shadow DOM
+      function findAllInteractableElements(root) {
+        let elements = [];
+        const selector = 'a, button, input, textarea, select, [role="button"], [tabindex]:not([tabindex="-1"])';
+        
+        if (root.querySelectorAll) {
+          elements.push(...Array.from(root.querySelectorAll(selector)));
+        }
+
+        const allChildren = root.querySelectorAll ? root.querySelectorAll('*') : [];
+        for (const child of allChildren) {
+          if (child.shadowRoot) {
+            elements.push(...findAllInteractableElements(child.shadowRoot));
+          }
+        }
+        return elements;
+      }
+
+      // Clean DOM noise to save token context and remove obstructions
+      function cleanDomNoise() {
+        const noiseSelectors = [
+          '[id*="cookie" i]', '[class*="cookie" i]',
+          '[id*="banner" i]', '[class*="banner" i]',
+          '[id*="ad-" i]', '[class*="ad-" i]',
+          'iframe[src*="ads"]',
+          '#gdpr', '.gdpr',
+          '[id*="popup" i]', '[class*="popup" i]'
+        ];
+        noiseSelectors.forEach(selector => {
+          document.querySelectorAll(selector).forEach(el => {
+            el.style.display = 'none';
+          });
+        });
+      }
+      
+      cleanDomNoise();
+
       // Using A11y heuristic approach: looking for interactive elements
-      const elements = document.querySelectorAll('a, button, input, textarea, select, [role="button"], [tabindex]:not([tabindex="-1"])');
+      const elements = findAllInteractableElements(document);
       const marksData = [];
       
       let currentId = 1;

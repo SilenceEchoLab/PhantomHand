@@ -1,5 +1,22 @@
 let ws = null;
 let currentTabId = null;
+let lastCursorPosition = { x: 0, y: 0 };
+
+async function simulateHumanMove(tabId, startX, startY, endX, endY) {
+  const steps = 15;
+  for (let i = 1; i <= steps; i++) {
+    // Ease-out like curve
+    const t = i / steps;
+    const ease = 1 - Math.pow(1 - t, 3);
+    const currentX = startX + (endX - startX) * ease + (Math.random() * 2 - 1);
+    const currentY = startY + (endY - startY) * ease + (Math.random() * 2 - 1);
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: currentX, y: currentY
+    });
+    await new Promise(r => setTimeout(r, 5 + Math.random() * 10));
+  }
+  lastCursorPosition = { x: endX, y: endY };
+}
 
 function connectWebSocket() {
   chrome.storage.local.get(['wsUrl'], (res) => {
@@ -46,6 +63,21 @@ connectWebSocket();
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === 'reconnect') {
     connectWebSocket();
+  }
+});
+
+// Global listener for CDP Events to handle JavaScript dialogs
+chrome.debugger.onEvent.addListener(async (source, method, params) => {
+  if (method === "Page.javascriptDialogOpening") {
+    console.warn(`[CDP] Intercepted Dialog: ${params.message} (Type: ${params.type})`);
+    // Default action: accept all dialogs to prevent freeze
+    try {
+      await chrome.debugger.sendCommand({ tabId: source.tabId }, "Page.handleJavaScriptDialog", {
+        accept: true
+      });
+    } catch (e) {
+      console.error("Failed to handle dialog:", e);
+    }
   }
 });
 
@@ -448,6 +480,8 @@ async function executeCommand(command) {
   // === PHASE 4: Commands that need the debugger ===
   try {
     await chrome.debugger.attach({ tabId }, "1.3");
+    // Enable Page domain to intercept dialogs
+    await chrome.debugger.sendCommand({ tabId }, "Page.enable");
   } catch (e) {
     // Already attached or forbidden URL
   }
@@ -455,16 +489,17 @@ async function executeCommand(command) {
   try {
     if (command.action === 'click') {
       const { x, y } = command;
-      // Stealth physical simulation: mouse moved, pressed, released
+      const targetX = x + (Math.random() * 2 - 1);
+      const targetY = y + (Math.random() * 2 - 1);
+      
+      await simulateHumanMove(tabId, lastCursorPosition.x, lastCursorPosition.y, targetX, targetY);
+      
       await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-        type: "mouseMoved", x, y
+        type: "mousePressed", x: targetX, y: targetY, button: "left", clickCount: 1
       });
+      await new Promise(r => setTimeout(r, 30 + Math.random() * 40)); 
       await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-        type: "mousePressed", x, y, button: "left", clickCount: 1
-      });
-      await new Promise(r => setTimeout(r, 50)); // slight human press delay
-      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-        type: "mouseReleased", x, y, button: "left", clickCount: 1
+        type: "mouseReleased", x: targetX, y: targetY, button: "left", clickCount: 1
       });
       replyToAgent("click_done", { x, y });
     }
@@ -529,9 +564,9 @@ async function executeCommand(command) {
       replyToAgent("press_key_done", { key: command.key });
     }
     else if (command.action === 'hover') {
-      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-        type: "mouseMoved", x: command.x, y: command.y
-      });
+      const targetX = command.x + (Math.random() * 2 - 1);
+      const targetY = command.y + (Math.random() * 2 - 1);
+      await simulateHumanMove(tabId, lastCursorPosition.x, lastCursorPosition.y, targetX, targetY);
       replyToAgent("hover_done", { x: command.x, y: command.y });
     }
     else if (command.action === 'select_all') {
@@ -593,6 +628,84 @@ async function executeCommand(command) {
       } else {
         replyToAgent('eval_js_done', { result: value });
       }
+    }
+    else if (command.action === 'clipboard_set') {
+      try {
+        const result = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: (text) => {
+            const input = document.createElement('textarea');
+            document.body.appendChild(input);
+            input.value = text;
+            input.select();
+            document.execCommand('copy');
+            input.remove();
+            return true;
+          },
+          args: [command.text]
+        });
+        replyToAgent('clipboard_set_done', { success: result[0]?.result });
+      } catch (e) {
+        replyToAgent('error', { message: e.message });
+      }
+    }
+    else if (command.action === 'clipboard_get') {
+      try {
+        const result = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            const input = document.createElement('textarea');
+            document.body.appendChild(input);
+            input.focus();
+            document.execCommand('paste');
+            const text = input.value;
+            input.remove();
+            return text;
+          }
+        });
+        replyToAgent('clipboard_get_result', { text: result[0]?.result });
+      } catch (e) {
+        replyToAgent('error', { message: e.message });
+      }
+    }
+    else if (command.action === 'session_export') {
+      const result = await chrome.debugger.sendCommand({ tabId }, "Network.getCookies", {});
+      replyToAgent('session_export_result', { cookies: result.cookies });
+    }
+    else if (command.action === 'session_import') {
+      // Massage cookies format if needed for Network.setCookies, typically it accepts what getCookies returns
+      await chrome.debugger.sendCommand({ tabId }, "Network.setCookies", { cookies: command.cookies });
+      replyToAgent('session_import_done', { success: true });
+    }
+    else if (command.action === 'fast_forward') {
+      await chrome.debugger.sendCommand({ tabId }, "Emulation.setVirtualTimePolicy", {
+        policy: "advance",
+        budget: command.ms
+      });
+      replyToAgent("fast_forward_done", { success: true });
+    }
+    else if (command.action === 'wait_for_download') {
+      const timeout = command.timeout || 30000;
+      let downloadListener;
+      const timeoutId = setTimeout(() => {
+        chrome.downloads.onChanged.removeListener(downloadListener);
+        replyToAgent('wait_for_download_result', { success: false, error: 'Timeout waiting for download.' });
+      }, timeout);
+
+      downloadListener = (delta) => {
+        if (delta.state && delta.state.current === 'complete') {
+          clearTimeout(timeoutId);
+          chrome.downloads.onChanged.removeListener(downloadListener);
+          chrome.downloads.search({ id: delta.id }, (items) => {
+            if (items && items.length > 0) {
+              replyToAgent('wait_for_download_result', { success: true, filePath: items[0].filename });
+            } else {
+              replyToAgent('wait_for_download_result', { success: false, error: 'Download completed but file not found.' });
+            }
+          });
+        }
+      };
+      chrome.downloads.onChanged.addListener(downloadListener);
     }
   } catch (error) {
     replyToAgent("error", { message: error.message });
